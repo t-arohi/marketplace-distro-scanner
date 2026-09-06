@@ -248,8 +248,15 @@ def sweep_orphan_groups(older_than_hours: float, dry_run: bool = False) -> dict:
             "eligible": len(victims), "failures": failures}
 
 
-def _undatable_count(resource_group: str) -> int:
-    """VMs whose creation time cannot be read, so a cutoff has to keep them."""
+def _undatable_count(resource_group: str, older_than_hours: float) -> int:
+    """VMs a cutoff has to keep because their creation time cannot be read.
+
+    Zero without a cutoff: nothing is being kept then, so counting them would
+    report the VMs being deleted as "left running" -- and in a dry run the same
+    VM would appear in both halves of the message.
+    """
+    if older_than_hours <= 0:
+        return 0
     vms = _az("vm", "list", "-g", resource_group,
               "--query", "[].{name:name, created:timeCreated}") or []
     return sum(1 for vm in vms if _parse_created(vm.get("created", "")) is None)
@@ -279,7 +286,7 @@ def sweep(resource_group: str, older_than_hours: float,
                 # No deletion was attempted, so nothing survived one. What a
                 # real run would remove is `eligible`.
                 "remaining": 0,
-                "undatable": _undatable_count(resource_group)}
+                "undatable": _undatable_count(resource_group, older_than_hours)}
 
     # One at a time: a bulk `az vm delete --ids` aborts the whole sweep if any
     # single VM fails, which is how orphans piled up before.
@@ -296,7 +303,7 @@ def sweep(resource_group: str, older_than_hours: float,
     # age is unreadable are separate -- they DO need reporting, or they sit
     # there forever.
     remaining = len(stale_vms(resource_group, older_than_hours))
-    undatable = _undatable_count(resource_group)
+    undatable = _undatable_count(resource_group, older_than_hours)
     return {"deleted_vms": deleted, "eligible": len(victims),
             "orphans": orphans, "failures": failures + orphan_failures,
             "remaining": remaining, "undatable": undatable}

@@ -533,3 +533,19 @@ def test_the_subscription_env_var_does_not_leak_between_tests(monkeypatch):
     import os
     monkeypatch.delenv("AZURE_SUBSCRIPTION_ID", raising=False)
     assert "AZURE_SUBSCRIPTION_ID" not in os.environ
+
+
+def test_undatable_is_not_reported_without_a_cutoff(monkeypatch):
+    # At cutoff 0 an undatable VM is deleted, not kept, so reporting it as
+    # "left running" would double-count the very VM being removed.
+    alerts = []
+    monkeypatch.setattr(vm_janitor, "_alert", lambda scope, detail: alerts.append(detail))
+    monkeypatch.setattr(vm_janitor, "_az",
+                        lambda *a: [_vm("odd", "not-a-date")]
+                        if a[:2] == ("vm", "list") else None)
+
+    vm_janitor.main(["--resource-group", "rg", "--older-than-hours", "0",
+                     "--dry-run", "--alert"])
+
+    assert "1 VM(s) would be deleted" in alerts[0]
+    assert "1 left running" not in alerts[0]
