@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import pathlib
 import sqlite3
 
 import pytest
@@ -505,3 +506,23 @@ def test_infra_error_does_not_overwrite_a_real_verdict_reason(tmp_path, monkeypa
     assert validated == "known_unsupported"
     assert reason == "prod repo is missing"  # not the deploy error
     assert source == record_result.INFRA_ERROR
+
+
+def test_migrated_columns_match_the_canonical_schema(tmp_path, monkeypatch):
+    # Phase 3 migrates independently of db_manager, so its column definitions
+    # have to agree with db/schema.sql or the two paths build different tables.
+    db = _make_db(tmp_path)  # deliberately missing the Phase 3 columns
+    monkeypatch.setattr(record_result.config, "DB_PATH", str(db))
+
+    conn = sqlite3.connect(str(db))
+    record_result._ensure_phase3_columns(conn)
+    cols = {r[1]: r for r in conn.execute("PRAGMA table_info(images)")}
+    conn.close()
+
+    canonical = pathlib.Path("db/schema.sql").read_text()
+    for name in ("last_checked", "reason", "verdict_source",
+                 "last_validated_version", "last_regressed_version"):
+        notnull, default = cols[name][3], cols[name][4]
+        if f"{name} " in canonical and "NOT NULL" in canonical.split(name, 1)[1][:40]:
+            assert notnull == 1, f"{name} should be NOT NULL like db/schema.sql"
+            assert default is not None, f"{name} needs a default to migrate"

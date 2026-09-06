@@ -104,7 +104,7 @@ def _ensure_phase3_columns(conn: sqlite3.Connection) -> None:
     """Add the columns Phase 3 writes if they do not exist (idempotent)."""
     for ddl in (
         "ALTER TABLE images ADD COLUMN last_validated TEXT",
-        "ALTER TABLE images ADD COLUMN last_checked TEXT",
+        "ALTER TABLE images ADD COLUMN last_checked TEXT NOT NULL DEFAULT ''",
         "ALTER TABLE images ADD COLUMN reason TEXT NOT NULL DEFAULT ''",
         "ALTER TABLE images ADD COLUMN last_validated_version TEXT NOT NULL DEFAULT ''",
         "ALTER TABLE images ADD COLUMN last_regressed_version TEXT NOT NULL DEFAULT ''",
