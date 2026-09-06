@@ -7,6 +7,7 @@ Azure credentials.
 import os
 import re
 
+import aznfs_support
 import db_manager
 
 _DEFAULT_EXCLUDED_PREFIXES = "centos"
@@ -72,13 +73,19 @@ def group_skus_by_reason(skus: list[dict]) -> list[tuple[str, list[dict]]]:
     return sorted(groups.items(), key=lambda kv: kv[0])
 
 
-def buckets_by_state(records: list[dict]) -> dict[str, list[dict]]:
+def buckets_by_state(records: list[dict], in_scope_only: bool = True) -> dict[str, list[dict]]:
     """Group tracked images into per-validation-state buckets for the monthly reminder.
 
     Buckets are ``known_supported`` / ``known_unsupported`` / ``unknown`` (the
     last also folds in the not-yet-decided ``pending_*`` states). For each
     (state, distro_label) the latest version observed is kept, with the
     contributing publishers and the number of SKUs. Returns {state: [distro,...]}.
+
+    Distros outside the AzNFS support matrix are dropped by default: they are
+    scanned and stored, but never handed to Phase 2/3, so reporting them as
+    'not yet validated' promises a backlog that does not exist and buries the
+    releases that genuinely are pending. Filtering here rather than in each
+    caller keeps the status page and the monthly e-mail showing the same thing.
 
     Each entry also carries ``skus``: the individual images behind it, with the
     per-image reason. A distro release is a group of quite different images
@@ -92,6 +99,10 @@ def buckets_by_state(records: list[dict]) -> dict[str, list[dict]]:
         if v == "known_unsupported":
             return "known_unsupported"
         return "unknown"  # unknown + pending_publish + new
+
+    if in_scope_only:
+        records = [r for r in records
+                   if aznfs_support.is_supported_distro(r.get("distro_label", ""))]
 
     groups: dict[tuple[str, str], dict] = {}
     for img in records:

@@ -21,6 +21,7 @@ import json
 import os
 import sys
 
+import aznfs_support
 import db_manager
 import status_rollup
 
@@ -51,7 +52,7 @@ def load_buckets(
     records = db_manager.get_all_records(db_path)
     if not include_excluded:
         records = status_rollup.exclude_distros(records, status_rollup.prefixes_from_env())
-    buckets = status_rollup.buckets_by_state(records)
+    buckets = status_rollup.buckets_by_state(records, in_scope_only=not include_excluded)
     needle = distro.casefold()
     return {
         state: [
@@ -72,6 +73,12 @@ def matching_skus(
     records = db_manager.get_all_records(db_path)
     if not include_excluded:
         records = status_rollup.exclude_distros(records, status_rollup.prefixes_from_env())
+        # Match the buckets: a distro the pipeline will never validate should
+        # not reappear once you drill into its SKUs.
+        records = [
+            r for r in records
+            if aznfs_support.is_supported_distro(r.get("distro_label", ""))
+        ]
     needle = distro.casefold()
     wanted = set(states)
     rows = []

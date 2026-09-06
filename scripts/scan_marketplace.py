@@ -517,8 +517,13 @@ def main() -> int:
                 )
             all_records = _exclude_distros(db_manager.get_all_records(config.DB_PATH))
 
+    # "To validate" means exactly that: a release outside the AzNFS support
+    # matrix is never handed to Phase 2, so counting it here would report a
+    # backlog that no run can ever burn down.
     unvalidated_records = [
-        r for r in all_records if r.get("validated") == "unknown"
+        r for r in all_records
+        if r.get("validated") == "unknown"
+        and aznfs_support.is_supported_distro(r.get("distro_label", ""))
     ]
     distro_rollup = rollup_by_distro(unvalidated_records)
     logger.info(
@@ -573,8 +578,10 @@ def main() -> int:
     # The actionable signal is a NEW distro release, not a new SKU. A new SKU of
     # an already-known release (e.g. another Ubuntu 22.04 variant) is not worth
     # an alert ΓÇö that release is already tracked/validated.
+    # (distro_rollup is already scoped to the support matrix.)
     new_distros = [
-        d for d in distro_rollup if d["distro_label"] not in known_distros_before
+        d for d in distro_rollup
+        if d["distro_label"] not in known_distros_before
     ]
 
     # ------------------------------------------------------------------
