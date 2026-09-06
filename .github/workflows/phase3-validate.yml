@@ -115,8 +115,16 @@ jobs:
           WANT=""
           RESOLVE_ERR=""
           if command -v git >/dev/null 2>&1; then
-            WANT=$(bash phase3/resolve_lisa_ref.sh "$REPO" "$REF" 2>/tmp/lisa_ref.err) \
-              || { WANT=""; RESOLVE_ERR=$(tail -1 /tmp/lisa_ref.err); }
+            # Every part best-effort: this path exists so a failed lookup cannot
+            # stop Phase 3, and it would be self-defeating for the error capture
+            # itself to abort the step under set -e.
+            ERR_FILE="${RUNNER_TEMP:-/tmp}/lisa_ref.err"
+            if ! WANT=$(bash phase3/resolve_lisa_ref.sh "$REPO" "$REF" 2>"$ERR_FILE"); then
+              WANT=""
+              RESOLVE_ERR=$(tail -n 1 "$ERR_FILE" 2>/dev/null || true)
+              # Distinct from the git-absent case below, which reads "no git".
+              [ -n "$RESOLVE_ERR" ] || RESOLVE_ERR="lookup failed, reason unavailable"
+            fi
           fi
           # Compare commit to commit: pip records the URL it cloned, so a plain
           # substring test could match on any part of it. Missing venv is fine --
@@ -129,8 +137,7 @@ jobs:
             # Being unable to ASK what upstream is must not stop Phase 3 running
             # on the engine it already has: azfiles-lisa is private, and the
             # runner has no credential for it in workflow context.
-            echo "::warning::Could not resolve upstream LISA (${RESOLVE_ERR:-no git}); \
-          keeping the installed engine ${HAVE_SHA:-unknown}"
+            echo "::warning::Could not resolve upstream LISA (${RESOLVE_ERR:-no git}); keeping the installed engine ${HAVE_SHA:-unknown}"
           elif [ -n "$WANT" ] && [ -n "$HAVE_SHA" ] \
              && "$VENV/bin/lisa" --help >/dev/null 2>&1 \
              && { [[ "$WANT" == "$HAVE_SHA"* ]] || [[ "$HAVE_SHA" == "$WANT"* ]]; }; then
