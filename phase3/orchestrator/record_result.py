@@ -31,6 +31,10 @@ logger = logging.getLogger(__name__)
 # re-provisioning the distro on every run.
 LISA_VERDICT = "lisa"
 
+# Marks a run that never reached a verdict (VM never deployed, Azure refused).
+# Phase 2 re-feeds rows carrying this so the distro is retried next run.
+INFRA_ERROR = "lisa_infra_error"
+
 
 # ---------------------------------------------------------------------------
 # Job model (one entry per distro handed over from Phase 2 / fed to LISA)
@@ -59,6 +63,7 @@ class LisaJob:
     distro_label: str = ""
     failure_reason: str = ""
     logs_url: str = ""
+    infra_error: bool = False
 
     def image_key(self) -> Dict[str, str]:
         # The 5-key identity Phase 1/Phase 2 use (NOT version; WITH architecture).
@@ -99,6 +104,7 @@ def _ensure_phase3_columns(conn: sqlite3.Connection) -> None:
     """Add the columns Phase 3 writes if they do not exist (idempotent)."""
     for ddl in (
         "ALTER TABLE images ADD COLUMN last_validated TEXT",
+        "ALTER TABLE images ADD COLUMN last_checked TEXT",
         "ALTER TABLE images ADD COLUMN reason TEXT NOT NULL DEFAULT ''",
         "ALTER TABLE images ADD COLUMN last_validated_version TEXT NOT NULL DEFAULT ''",
         "ALTER TABLE images ADD COLUMN last_regressed_version TEXT NOT NULL DEFAULT ''",
@@ -252,13 +258,16 @@ def _send_summary(
     supported: List[Dict[str, str]],
     unsupported: List[Dict[str, str]],
     regressions: List[Dict[str, str]] | None = None,
+    infra_errors: List[Dict[str, str]] | None = None,
 ) -> None:
     """The single end-of-run e-mail: pass / fail (+ package/image-regression) tables."""
     regressions = regressions or []
+    infra_errors = infra_errors or []
     reg_subject = f", {len(regressions)} regressed" if regressions else ""
+    infra_subject = f", {len(infra_errors)} untestable" if infra_errors else ""
     subject = (
         f"[AzNFS Phase 3] validation summary: {len(supported)} supported, "
-        f"{len(unsupported)} unsupported{reg_subject} (of {processed})"
+        f"{len(unsupported)} unsupported{reg_subject}{infra_subject} (of {processed})"
     )
 
     def _plain(rows, keys):
@@ -275,14 +284,16 @@ def _send_summary(
         f"b) Validation fails (kept in known_unsupported) ({len(unsupported)}):\n"
         f"{_plain(unsupported, ['label', 'arch', 'urn', 'logs_url', 'reason'])}\n\n"
         f"c) Regressions (newer AzNFS or new image failed; kept known_supported) ({len(regressions)}):\n"
-        f"{_plain(regressions, ['label', 'arch', 'urn', 'logs_url', 'reason'])}"
+        f"{_plain(regressions, ['label', 'arch', 'urn', 'logs_url', 'reason'])}\n\n"
+        f"d) Could NOT be tested -- infrastructure, no verdict recorded, will retry ({len(infra_errors)}):\n"
+        f"{_plain(infra_errors, ['label', 'arch', 'urn', 'logs_url', 'reason'])}"
     )
 
     html_body = (
         "<div style='font-family:Segoe UI,sans-serif;color:#24292e'>"
         f"<p style='font-size:14px'>Phase 3 validated <b>{processed}</b> distro(s) with LISA &mdash; "
         f"<b>{len(supported)}</b> supported, <b>{len(unsupported)}</b> unsupported, "
-        f"<b>{len(regressions)}</b> regressed.</p>"
+        f"<b>{len(regressions)}</b> regressed, <b>{len(infra_errors)}</b> untestable.</p>"
         + _table_html(
             f"a) Validation successful (known_supported) ({len(supported)})",
             [("label", "Distro"), ("arch", "Arch")],
@@ -310,6 +321,17 @@ def _send_summary(
             ],
             regressions,
         )
+        + _table_html(
+            f"d) Could NOT be tested &mdash; infrastructure, no verdict recorded, will retry ({len(infra_errors)})",
+            [
+                ("label", "Distro"),
+                ("arch", "Arch"),
+                ("urn", "Image URN"),
+                ("logs_url", "Logs URL"),
+                ("reason", "Reason"),
+            ],
+            infra_errors,
+        )
         + "</div>"
     )
     _notify(subject, plain, html_body=html_body)
@@ -318,6 +340,37 @@ def _send_summary(
 # ---------------------------------------------------------------------------
 # Orchestration
 # ---------------------------------------------------------------------------
+def _mark_infra_error(image_key: Dict[str, str], reason: str) -> None:
+    """Flag "could not test", deliberately WITHOUT touching ``validated``.
+
+    A VM that never deployed proves nothing about AzNFS, so the row keeps
+    whatever verdict it had; only the marker is set, which is what makes Phase 2
+    retry it. Mirrors db_manager.mark_probe_failed on the Phase 2 side.
+    """
+    now = _now_iso()
+    conn = sqlite3.connect(config.DB_PATH)
+    try:
+        _ensure_phase3_columns(conn)
+        cur = conn.execute(
+            """
+            UPDATE images
+               SET verdict_source = ?, last_checked = ?, reason = ?
+             WHERE publisher    = ?
+               AND image        = ?
+               AND sku          = ?
+               AND region       = ?
+               AND architecture = ?
+            """,
+            (INFRA_ERROR, now, reason, image_key["publisher"], image_key["image"],
+             image_key["sku"], image_key["region"], image_key["architecture"]),
+        )
+        conn.commit()
+        if cur.rowcount == 0:
+            logger.warning("no images row matched %s (infra error)", image_key)
+    finally:
+        conn.close()
+
+
 def process_job(job: LisaJob) -> Tuple[str, str]:
     """Record one distro's verdict. Returns (validated_state, failure_reason).
 
@@ -328,6 +381,9 @@ def process_job(job: LisaJob) -> Tuple[str, str]:
     version is stored in ``last_regressed_version`` so Phase 2 will not re-test /
     re-alert that exact package (a strictly newer one supersedes it). A failure on
     any other prior state (first-time / retry) is a real known_unsupported.
+
+    A run that could not test the distro at all records no verdict: it is only
+    flagged for retry, so an Azure problem never retires a distro.
     """
     if job.lisa_passed:
         logger.info("[%s] LISA PASSED -> recording known_supported in DB", job.distro_label)
@@ -336,6 +392,13 @@ def process_job(job: LisaJob) -> Tuple[str, str]:
                            last_regressed_version="",
                            last_validated_image_version=job.version)
         return "known_supported", ""
+    if job.infra_error:
+        logger.warning(
+            "[%s] could not be tested (%s) -> no verdict recorded, will retry",
+            job.distro_label, job.failure_reason or "no reason",
+        )
+        _mark_infra_error(job.image_key(), job.failure_reason)
+        return "infra_error", job.failure_reason
     prior_state, prior_version, prior_image = _current_validation(job.image_key())
     if prior_state == "known_supported":
         # Distinguish an IMAGE regression (the SAME AzNFS package that previously
@@ -376,11 +439,13 @@ def run(jobs: List[LisaJob]) -> Dict[str, int]:
     # is nothing to validate: no jobs means no verdicts, so skip the e-mail.
     if not jobs:
         logger.info("Phase 3: no jobs to record; skipping summary e-mail.")
-        return {"known_supported": 0, "known_unsupported": 0, "regressions": 0}
+        return {"known_supported": 0, "known_unsupported": 0, "regressions": 0,
+                "infra_errors": 0}
     run_url = _github_run_url()
     supported: List[Dict[str, str]] = []
     unsupported: List[Dict[str, str]] = []
     regressions: List[Dict[str, str]] = []
+    infra_errors: List[Dict[str, str]] = []
     for job in jobs:
         label = job.distro_label or f"{job.publisher}/{job.image}/{job.sku}"
         logs_url = job.logs_url or run_url or "n/a"
@@ -393,6 +458,11 @@ def run(jobs: List[LisaJob]) -> Dict[str, int]:
                 {"label": label, "arch": job.arch, "urn": urn,
                  "logs_url": logs_url, "reason": reason}
             )
+        elif state == "infra_error":
+            infra_errors.append(
+                {"label": label, "arch": job.arch, "urn": urn,
+                 "logs_url": logs_url, "reason": reason or "could not be tested"}
+            )
         else:
             unsupported.append(
                 {
@@ -403,15 +473,17 @@ def run(jobs: List[LisaJob]) -> Dict[str, int]:
                     "reason": reason or "validation failed",
                 }
             )
-    _send_summary(len(jobs), supported, unsupported, regressions)
+    _send_summary(len(jobs), supported, unsupported, regressions, infra_errors)
     logger.info(
-        "Phase 3: %d supported, %d unsupported, %d regressed (of %d)",
-        len(supported), len(unsupported), len(regressions), len(jobs),
+        "Phase 3: %d supported, %d unsupported, %d regressed, %d untestable (of %d)",
+        len(supported), len(unsupported), len(regressions), len(infra_errors),
+        len(jobs),
     )
     return {
         "known_supported": len(supported),
         "known_unsupported": len(unsupported),
         "regressions": len(regressions),
+        "infra_errors": len(infra_errors),
     }
 
 

@@ -158,11 +158,39 @@ def _parse_junit(xml_path: Path) -> Tuple[int, int, int, str]:
     return total, failed, skipped, "; ".join(reasons)
 
 
+# Failures that mean "we could not test this distro", not "AzNFS is broken on it":
+# the VM never deployed, Azure refused, or the environment died before any case
+# ran. Recording these as a verdict retires a distro for an Azure problem.
+_INFRA_RE = re.compile(
+    r"driver/infra error"
+    r"|deployment failed"
+    r"|environment failed"
+    r"|no available environment"
+    r"|authorizationfailed"
+    r"|httpresponseerror"
+    r"|marketplace\w*ordering"
+    r"|purchase\w* plan|accept the terms|termsnotaccepted"
+    r"|quotaexceeded|subscriptionrequeststhrottled|allocationfailed|skunotavailable"
+    r"|failed to connect|connection\s+(?:refused|timed out|reset)"
+    r"|ssh.*(?:timeout|timed out|authentication failed)"
+    r"|private key file not exist|no such file or directory.*environment\.log",
+    re.IGNORECASE,
+)
+
+
+def _is_infra_failure(reason: str) -> bool:
+    return bool(reason) and bool(_INFRA_RE.search(reason))
+
+
 def _validate_one(
     job: LisaJob, subscription_id: str, concurrency: int
 ) -> LisaJob:
     """Run + score one distro, setting ``job.lisa_passed`` and, on failure,
-    ``job.failure_reason`` (the failing tier/step for the summary e-mail)."""
+    ``job.failure_reason`` (the failing tier/step for the summary e-mail).
+
+    ``job.infra_error`` marks a run that never produced a usable answer, which
+    is recorded as "retry me" rather than as a verdict against the distro.
+    """
     try:
         junit = _run_lisa(job, subscription_id, concurrency)
         total, failed, skipped, reason = _parse_junit(junit)
@@ -172,14 +200,18 @@ def _validate_one(
             job.failure_reason = reason or (
                 "no test cases ran (all skipped or environment failed)"
             )
+            # Nothing executed, or what failed was Azure rather than AzNFS.
+            job.infra_error = ran <= 0 or _is_infra_failure(job.failure_reason)
         logger.info(
             "[%s] total=%d failed=%d skipped=%d -> %s%s",
             job.distro_label, total, failed, skipped,
-            "PASSED" if job.lisa_passed else "FAILED",
+            "PASSED" if job.lisa_passed
+            else ("INFRA ERROR" if job.infra_error else "FAILED"),
             "" if job.lisa_passed else f" ({job.failure_reason})",
         )
-    except Exception as exc:  # an infra/driver error is a non-pass for safety
+    except Exception as exc:
         job.lisa_passed = False
+        job.infra_error = True
         job.failure_reason = f"driver/infra error: {exc}"
         logger.error("[%s] LISA run errored: %s", job.distro_label, exc)
     return job
@@ -287,7 +319,17 @@ def main() -> int:
     # Post-validation: record verdicts in the DB + send ONE summary e-mail.
     summary = record_result.run(jobs)
     logger.info("phase 3 complete. states: %s", summary)
-    # Non-zero exit if any distro failed validation, for CI gating.
+    # Exit codes mirror Phase 1: 0 = everything passed, 1 = a distro genuinely
+    # failed validation (expected, actionable by the AzNFS team), 2 = we could
+    # not test something. Without the split every failing distro paints the run
+    # red and a broken pipeline looks exactly like a normal bad result.
+    if any(j.infra_error for j in jobs):
+        broken = [j.distro_label or j.sku for j in jobs if j.infra_error]
+        logger.error(
+            "%d distro(s) could not be tested (infrastructure, not AzNFS): %s",
+            len(broken), ", ".join(broken),
+        )
+        return 2
     return 0 if all(j.lisa_passed for j in jobs) else 1
 
 

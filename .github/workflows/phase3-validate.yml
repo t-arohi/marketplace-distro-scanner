@@ -31,9 +31,11 @@ jobs:
       - azure-vm-marketplace
 
     permissions:
-      # A job-level block replaces the defaults, so actions:read must be listed
-      # or the Phase 2 artifact download loses access.
-      actions: read
+      # A job-level block replaces the defaults, so every scope this job needs
+      # must be listed. actions:write is what lets the final "Save database
+      # cache" step reserve a cache -- without it every verdict recorded below
+      # is written to marketplace.db and then thrown away.
+      actions: write
       contents: write
 
     steps:

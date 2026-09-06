@@ -302,7 +302,8 @@ def test_run_sends_single_summary_with_reasons(tmp_path, monkeypatch):
     ]
     summary = record_result.run(jobs)
 
-    assert summary == {"known_supported": 1, "known_unsupported": 1, "regressions": 0}
+    assert summary == {"known_supported": 1, "known_unsupported": 1,
+                       "regressions": 0, "infra_errors": 0}
     assert len(sent) == 1  # exactly ONE e-mail for the whole run
     subject, body = sent[0]
     assert "1 supported, 1 unsupported" in subject
@@ -326,7 +327,8 @@ def test_run_no_jobs_sends_no_email(monkeypatch):
         lambda s, b, html_body=None: sent.append((s, b)),
     )
     summary = record_result.run([])
-    assert summary == {"known_supported": 0, "known_unsupported": 0, "regressions": 0}
+    assert summary == {"known_supported": 0, "known_unsupported": 0,
+                       "regressions": 0, "infra_errors": 0}
     assert sent == []  # no e-mail
 
 
@@ -358,3 +360,89 @@ def test_parse_junit_clean_pass_has_no_reason(tmp_path):
     )
     total, failed, skipped, reason = run_phase3._parse_junit(xml)
     assert (total, failed, skipped, reason) == (3, 0, 0, "")
+
+
+# The exact string a real run wrote into the DB for Rocky 8 arm64: the VM never
+# deployed because the subscription had not accepted the marketplace terms.
+_REAL_DEPLOY_FAILURE = (
+    "verify_aznfs_install_lifecycle (lisa_0_0): deployment failed. "
+    "HttpResponseError: (AuthorizationFailed) does not have permission to "
+    "perform action 'Microsoft.MarketplaceOrdering/offertypes/.../agreements/write'"
+)
+
+
+@pytest.mark.parametrize(
+    "reason",
+    [
+        _REAL_DEPLOY_FAILURE,
+        "driver/infra error: LISA produced no junit (exit=1)",
+        "no test cases ran (all skipped or environment failed)",
+        "QuotaExceeded: not enough vCPUs in centralindia",
+        "[Tier 4: mount] failed to connect to node",
+    ],
+)
+def test_infrastructure_failures_are_classified_as_untestable(reason):
+    assert run_phase3._is_infra_failure(reason)
+
+
+@pytest.mark.parametrize(
+    "reason",
+    [
+        "[Tier 2: install] aznfs install command failed",
+        "[Tier 3: footprint] aznfs registered at the wrong version",
+        "verify_aznfs_install_lifecycle (lisa_0_0): failed. AssertionError: "
+        "[Failed to uninstall ['aznfs']]",
+    ],
+)
+def test_real_aznfs_failures_are_still_verdicts(reason):
+    assert not run_phase3._is_infra_failure(reason)
+
+
+def test_untestable_distro_keeps_its_verdict_and_is_flagged_for_retry(
+    tmp_path, monkeypatch
+):
+    # An Azure problem must never retire a distro: the row keeps whatever state
+    # it had, and only the retry marker is written.
+    db = _make_db(tmp_path)
+    monkeypatch.setattr(record_result.config, "DB_PATH", str(db))
+    monkeypatch.setattr(record_result.config, "PHASE3_SCHEMA_PATH", "/nonexistent.sql")
+
+    job = record_result.LisaJob(
+        publisher="redhat", image="rhel", sku="9_5", version="9.5.20240101",
+        region="eastus", arch="x86_64", lisa_passed=False, infra_error=True,
+        failure_reason=_REAL_DEPLOY_FAILURE,
+    )
+    state, _ = record_result.process_job(job)
+
+    conn = sqlite3.connect(str(db))
+    validated, source = conn.execute(
+        "SELECT validated, verdict_source FROM images"
+    ).fetchone()
+    conn.close()
+
+    assert state == "infra_error"
+    assert validated == "pending_validation"  # unchanged, NOT known_unsupported
+    assert source == record_result.INFRA_ERROR
+
+
+def test_a_genuine_test_failure_still_records_known_unsupported(tmp_path, monkeypatch):
+    db = _make_db(tmp_path)
+    monkeypatch.setattr(record_result.config, "DB_PATH", str(db))
+    monkeypatch.setattr(record_result.config, "PHASE3_SCHEMA_PATH", "/nonexistent.sql")
+
+    job = record_result.LisaJob(
+        publisher="redhat", image="rhel", sku="9_5", version="9.5.20240101",
+        region="eastus", arch="x86_64", lisa_passed=False,
+        failure_reason="[Tier 2: install] aznfs install command failed",
+    )
+    state, _ = record_result.process_job(job)
+
+    conn = sqlite3.connect(str(db))
+    validated, source = conn.execute(
+        "SELECT validated, verdict_source FROM images"
+    ).fetchone()
+    conn.close()
+
+    assert state == "known_unsupported"
+    assert validated == "known_unsupported"
+    assert source == record_result.LISA_VERDICT

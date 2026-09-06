@@ -169,6 +169,8 @@ def entries_from_db(
 _LISA_VERDICT = "lisa"
 # Not a verdict: set when PMC could not be reached, cleared by any real verdict.
 _PROBE_ERROR = "probe_error"
+# Not a verdict either: set when a Phase 3 VM run never got far enough to judge.
+_LISA_INFRA_ERROR = "lisa_infra_error"
 
 
 def _is_preferred_image(row: dict, cur: dict) -> bool:
@@ -334,22 +336,25 @@ def enrich_and_merge(entries: list[dict], db_mod: Any, db_path: str) -> list[dic
             seen.add(ident)
             out.append({**row, "_db_state": "known_unsupported"})
 
-        # Rows whose last check could not reach PMC. They carry no verdict --
-        # only the marker -- and `unknown` rows are not re-fed by anything else,
-        # so without this a release stranded by one unreachable run would wait
-        # for Phase 1 to re-emit its image, which only happens when it changes.
-        for row in db_mod.get_rows_by_verdict_source(db_path, _PROBE_ERROR):
-            if _excluded(row):
-                continue
-            ident = (
-                row.get("publisher", ""), row.get("image", ""), row.get("sku", ""),
-                row.get("region", ""), row.get("architecture", ""),
-            )
-            if ident in seen:
-                continue
-            seen.add(ident)
-            logger.info("Retrying %s: last check could not reach PMC", ident)
-            out.append({**row, "_db_state": row.get("validated") or None})
+        # Rows whose last check could not reach PMC, and rows whose Phase 3 VM
+        # run never produced a verdict (deploy/auth/quota). Both carry only the
+        # marker -- no verdict -- and `unknown` rows are not re-fed by anything
+        # else, so without this a release stranded by one bad run would wait for
+        # Phase 1 to re-emit its image, which only happens when it changes.
+        for source, why in ((_PROBE_ERROR, "could not reach PMC"),
+                            (_LISA_INFRA_ERROR, "Phase 3 could not test it")):
+            for row in db_mod.get_rows_by_verdict_source(db_path, source):
+                if _excluded(row):
+                    continue
+                ident = (
+                    row.get("publisher", ""), row.get("image", ""), row.get("sku", ""),
+                    row.get("region", ""), row.get("architecture", ""),
+                )
+                if ident in seen:
+                    continue
+                seen.add(ident)
+                logger.info("Retrying %s: last run %s", ident, why)
+                out.append({**row, "_db_state": row.get("validated") or None})
     except Exception:  # pragma: no cover - re-check is best-effort
         logger.exception("known_supported re-check re-feed skipped")
 
