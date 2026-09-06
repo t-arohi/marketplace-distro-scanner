@@ -488,7 +488,6 @@ def main() -> int:
     # fresh token) clears EVERY row's verdict back to 'unknown' ONCE, so the
     # whole fleet flows through Phase 2/3 again. It is a one-shot keyed on the
     # token (DB meta), so a forgotten variable does not wipe verdicts every day.
-    # 'pending_validation' rows are kept (a concurrent Phase 3 may be mid-run).
     # Pair it with EMIT_BACKLOG (same or a new token) to actually emit the
     # reset rows; on their own the reset rows only become 'unknown' in the DB.
     reset_token = os.environ.get("RESET_VALIDATION", "").strip()
@@ -499,13 +498,11 @@ def main() -> int:
                 reset_token,
             )
         else:
-            n = db_manager.reset_validation_to_unknown(
-                config.DB_PATH, exclude_states=("pending_validation",)
-            )
+            n = db_manager.reset_validation_to_unknown(config.DB_PATH)
             db_manager.set_meta(config.DB_PATH, "reset_validation_token", reset_token)
             logger.warning(
                 "RESET_VALIDATION=%r: reset %d image row(s) back to 'unknown' "
-                "(kept pending_validation) -- one-shot full re-validation armed.",
+                "-- one-shot full re-validation armed.",
                 reset_token, n,
             )
             # A reset only marks rows 'unknown'; the backlog feed is what hands

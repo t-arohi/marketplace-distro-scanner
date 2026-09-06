@@ -9,7 +9,6 @@ from src.phase2.orchestrator import (
     KNOWN_SUPPORTED,
     KNOWN_UNSUPPORTED,
     PENDING_PUBLISH,
-    PENDING_VALIDATION,
     process_entry,
     run_phase2,
 )

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import sqlite3
 
+import pytest
+
 import db_manager
 
 
@@ -33,7 +35,7 @@ def test_reset_clears_all_validation_markers(tmp_path):
 
 
 def test_reset_respects_exclude_states_but_still_clears_markers(tmp_path):
-    # A pending_validation row is left untouched; every other row is reset AND has
+    # An excluded row is left untouched; every other row is reset AND has
     # all its validation markers cleared.
     db = str(tmp_path / "m.db")
     db_manager.initialize(db, "db/schema.sql")
@@ -41,7 +43,7 @@ def test_reset_respects_exclude_states_but_still_clears_markers(tmp_path):
     reset = ("Canonical", "ubuntu-22_04-lts", "server", "eastus", "x86_64")
     db_manager.check_and_upsert(db, *keep[:3], "9.1.0", keep[3], keep[4], "yum", "RHEL 9")
     db_manager.check_and_upsert(db, *reset[:3], "22.04.1", reset[3], reset[4], "apt", "Ubuntu 22.04")
-    db_manager.set_validation_state(db, keep, "pending_validation")
+    db_manager.set_validation_state(db, keep, "known_unsupported")
     db_manager.set_validation_state(db, reset, "known_supported", last_validated_version="0.3.458")
     conn = sqlite3.connect(db)
     conn.execute(
@@ -51,7 +53,7 @@ def test_reset_respects_exclude_states_but_still_clears_markers(tmp_path):
     conn.commit()
     conn.close()
 
-    db_manager.reset_validation_to_unknown(db, exclude_states=("pending_validation",))
+    db_manager.reset_validation_to_unknown(db, exclude_states=("known_unsupported",))
 
     conn = sqlite3.connect(db)
     kept = conn.execute("SELECT validated FROM images WHERE sku='9_1'").fetchone()[0]
@@ -60,7 +62,7 @@ def test_reset_respects_exclude_states_but_still_clears_markers(tmp_path):
         "FROM images WHERE sku='server'"
     ).fetchone()
     conn.close()
-    assert kept == "pending_validation"           # excluded row untouched
+    assert kept == "known_unsupported"            # excluded row untouched
     assert was_reset == ("unknown", "", "")         # reset + markers cleared
 
 
@@ -107,15 +109,54 @@ def test_reset_clears_every_trace_of_the_old_verdict(tmp_path):
     assert row["last_validated_version"] == ""
 
 
-def test_reset_leaves_in_flight_rows_alone(tmp_path):
-    # A concurrent Phase 3 owns pending_validation rows; wiping them would
-    # let Phase 2 re-dispatch a VM that is already running.
+def test_legacy_pending_validation_rows_are_released(tmp_path):
+    # An older Phase 2 wrote 'pending_validation'; nothing sets or clears it now,
+    # and Phase 2 skipped it -- so those rows could never be validated again.
     db = str(tmp_path / "m.db")
     db_manager.initialize(db, "db/schema.sql")
     db_manager.check_and_upsert(db, "RedHat", "RHEL", "9-lvm", "9.0.1", "eastus",
                                 "x86_64", "yum", "RHEL 9.0")
     ident = ("RedHat", "RHEL", "9-lvm", "eastus", "x86_64")
-    db_manager.set_validation_state(db, ident, "pending_validation")
+    conn = sqlite3.connect(db)          # the state is no longer writable via the API
+    conn.execute("UPDATE images SET validated='pending_validation'")
+    conn.commit()
+    conn.close()
 
-    assert db_manager.reset_validation_to_unknown(db, exclude_states=("pending_validation",)) == 0
-    assert db_manager.get_image_record(db, *ident)["validated"] == "pending_validation"
+    db_manager.initialize(db, "db/schema.sql")
+
+    assert db_manager.get_image_record(db, *ident)["validated"] == "unknown"
+
+
+def test_releasing_a_stranded_row_clears_its_validation_markers(tmp_path):
+    # A surviving last_validated_version would let Gate 3 trust the row without
+    # ever running it -- the opposite of releasing it for validation.
+    db = str(tmp_path / "m.db")
+    db_manager.initialize(db, "db/schema.sql")
+    db_manager.check_and_upsert(db, "RedHat", "RHEL", "8-LVM", "8.9.1", "eastus",
+                                "x86_64", "yum", "RHEL 8")
+    ident = ("RedHat", "RHEL", "8-LVM", "eastus", "x86_64")
+    conn = sqlite3.connect(db)
+    conn.execute("""UPDATE images SET validated='pending_validation',
+                        last_validated_version='0.3.458', reason='stale',
+                        verdict_source='gate', last_regressed_version='0.3.500',
+                        last_validated_image_version='8.9.0'""")
+    conn.commit()
+    conn.close()
+
+    db_manager.initialize(db, "db/schema.sql")
+
+    row = db_manager.get_image_record(db, *ident)
+    assert row["validated"] == "unknown"
+    for marker in ("last_validated_version", "reason", "verdict_source",
+                   "last_regressed_version", "last_validated_image_version"):
+        assert row[marker] == "", f"{marker} survived the release"
+
+
+def test_retired_state_cannot_be_written(tmp_path):
+    db = str(tmp_path / "m.db")
+    db_manager.initialize(db, "db/schema.sql")
+    db_manager.check_and_upsert(db, "RedHat", "RHEL", "9-lvm", "9.0.1", "eastus",
+                                "x86_64", "yum", "RHEL 9.0")
+    ident = ("RedHat", "RHEL", "9-lvm", "eastus", "x86_64")
+    with pytest.raises(ValueError):
+        db_manager.set_validation_state(db, ident, "pending_validation")

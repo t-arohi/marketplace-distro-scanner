@@ -368,27 +368,24 @@ def _ident(e):
     return (e["publisher"], e["image"], e["sku"], e["region"], e["architecture"])
 
 
-def test_enrich_skips_in_flight_and_lisa_verdicts_but_rechecks_the_rest():
+def test_enrich_skips_lisa_verdicts_but_rechecks_the_rest():
     # A reused Phase 1 artifact still lists images Phase 2 already handled. The DB
-    # state is authoritative: in-flight (pending_validation) images are NOT
-    # re-dispatched, and neither are known_unsupported rows a Phase 3 VM run
-    # decided. known_supported flows on (tagged _db_state) so Gate 3 can re-check
-    # the prod AzNFS version, and so does a known_unsupported row Phase 2 decided
-    # itself -- that verdict is just a repo/package lookup and goes stale.
-    e_inflight = _entry(sku="inflight")
+    # state is authoritative: known_unsupported rows a Phase 3 VM run decided are
+    # NOT re-dispatched. known_supported flows on (tagged _db_state) so Gate 3 can
+    # re-check the prod AzNFS version, and so does a known_unsupported row Phase 2
+    # decided itself -- that verdict is just a repo/package lookup and goes stale.
     e_supported = _entry(sku="supported")
     e_gate = _entry(sku="gate-unsupported")
     e_lisa = _entry(sku="lisa-unsupported")
     e_fresh = _entry(sku="fresh")
     db = FakeDbMod(records={
-        _ident(e_inflight): {"validated": "pending_validation"},
         _ident(e_supported): {"validated": "known_supported", "last_validated_version": "0.3.458"},
         _ident(e_gate): {"validated": "known_unsupported", "verdict_source": "gate"},
         _ident(e_lisa): {"validated": "known_unsupported", "verdict_source": "lisa"},
         _ident(e_fresh): {"validated": "unknown"},
     })
 
-    out = run.enrich_and_merge([e_inflight, e_supported, e_gate, e_lisa, e_fresh], db, "db")
+    out = run.enrich_and_merge([e_supported, e_gate, e_lisa, e_fresh], db, "db")
 
     assert [r["sku"] for r in out] == ["supported", "gate-unsupported", "fresh"]
     supported = next(r for r in out if r["sku"] == "supported")

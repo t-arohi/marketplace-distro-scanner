@@ -155,8 +155,6 @@ def entries_from_db(
     )
 
 
-# DB ``validated`` states that Phase 2 must NOT re-process:
-#   pending_validation  -> a LISA job is already in flight at Phase 3
 # ``known_supported`` is deliberately NOT skipped: it is re-fed below so Gate 3
 # can compare the current prod AzNFS version against last_validated_version and
 # re-validate when a newer package ships (an unchanged package stays trusted, no
@@ -168,7 +166,6 @@ def entries_from_db(
 # to be unreachable that run. Those are re-checked every run and self-heal. Only
 # ``lisa`` verdicts (the suite actually failed on a VM) are skipped, so a broken
 # distro is not re-provisioned daily; reset it explicitly to re-test.
-_SKIP_STATES = frozenset({"pending_validation"})
 _LISA_VERDICT = "lisa"
 # Not a verdict: set when PMC could not be reached, cleared by any real verdict.
 _PROBE_ERROR = "probe_error"
@@ -216,10 +213,9 @@ def enrich_and_merge(entries: list[dict], db_mod: Any, db_path: str) -> list[dic
 
     The DB ``validated`` state is authoritative:
 
-    * Skip any image already ``pending_validation`` (in flight at Phase 3), or
-      ``known_unsupported`` from a Phase 3 VM run (``verdict_source == 'lisa'``).
-      Skipping keeps a re-run over a reused Phase 1 artifact idempotent and
-      avoids double-dispatching / racing a concurrent Phase 3.
+    * Skip any image ``known_unsupported`` from a Phase 3 VM run
+      (``verdict_source == 'lisa'``), so a distro the suite actually failed on
+      is not re-provisioned daily; reset it explicitly to re-test.
     * Re-check ``known_unsupported`` rows that Phase 2 itself decided: those are
       repo/package lookups that go stale the moment AzNFS publishes for the
       distro, so leaving them terminal silently under-reports support.
@@ -257,9 +253,6 @@ def enrich_and_merge(entries: list[dict], db_mod: Any, db_path: str) -> list[dic
                 ts = rec.get("last_validated", ts)
         except Exception:  # pragma: no cover - DB best-effort; entry default stands
             logger.debug("DB lookup failed for %s; using entry default", ident)
-        if state in _SKIP_STATES:
-            logger.info("Skipping %s: DB state %r (already handled / in flight at Phase 3)", ident, state)
-            continue
         if state == "known_unsupported" and source == _LISA_VERDICT:
             logger.info("Skipping %s: known_unsupported from a Phase 3 VM run (reset to re-test)", ident)
             continue

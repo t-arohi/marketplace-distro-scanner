@@ -25,12 +25,9 @@ UNCHANGED = "unchanged"
 # Phase 2 validation states written back to the `validated` column.
 KNOWN_SUPPORTED = "known_supported"
 KNOWN_UNSUPPORTED = "known_unsupported"
-PENDING_PUBLISH = "pending_publish"        # prod repo exists, package not yet published (retried)
-PENDING_VALIDATION = "pending_validation"  # package found, LISA job emitted, awaiting Phase 3
+PENDING_PUBLISH = "pending_publish"        # summary-e-mail label; no code writes it, but Phase 2 re-queues rows found in it
 UNKNOWN = "unknown"
-_VALID_STATES = {
-    KNOWN_SUPPORTED, KNOWN_UNSUPPORTED, PENDING_PUBLISH, PENDING_VALIDATION, UNKNOWN,
-}
+_VALID_STATES = {KNOWN_SUPPORTED, KNOWN_UNSUPPORTED, PENDING_PUBLISH, UNKNOWN}
 
 # verdict_source value meaning "the last check could not reach PMC". Not a
 # verdict: it leaves `validated` alone and only marks the row for a retry.
@@ -92,6 +89,25 @@ def _lazy_migrate(conn: sqlite3.Connection) -> None:
         for stmt in adds:
             conn.execute(stmt)
         conn.commit()
+
+    # 'pending_validation' was written by an older Phase 2 and is no longer set
+    # by anything. Phase 2 skipped that state and the reset preserved it, so the
+    # rows could never be validated or cleared -- release them. The markers go
+    # too: a surviving last_validated_version would let Gate 3 trust the row
+    # without a run, which is the opposite of releasing it.
+    stranded = conn.execute(
+        """UPDATE images
+              SET validated                    = 'unknown',
+                  last_validated_version       = '',
+                  last_validated_image_version = '',
+                  last_regressed_version       = '',
+                  reason                       = '',
+                  verdict_source               = ''
+            WHERE validated = 'pending_validation'"""
+    ).rowcount
+    if stranded:
+        conn.commit()
+        logger.warning("Released %d row(s) stranded in 'pending_validation' -> 'unknown'", stranded)
 
 
 def initialize(db_path: str, schema_path: str) -> None:
@@ -247,8 +263,7 @@ def set_validation_state(
     identity is the full row identity tuple
     (publisher, image, sku, region, architecture) — the same key used by
     check_and_upsert / get_image_record. ``state`` must be one of
-    'known_supported', 'known_unsupported', 'pending_publish',
-    'pending_validation', 'unknown'.
+    'known_supported', 'known_unsupported', 'pending_publish', 'unknown'.
 
     ``last_validated_version`` is the AzNFS version a successful Phase 3 run
     just validated on prod; when given it is recorded so the next Phase 2 run
@@ -346,8 +361,7 @@ def reset_validation_to_unknown(
     surviving marker would let Gate 3's ``known_bad`` path trust a row without a
     LISA run). ``reason`` and ``verdict_source`` go too, so a reset row carries no
     trace of the verdict it used to have. Rows whose current state is in
-    ``exclude_states`` are left untouched (e.g. keep 'pending_validation' rows
-    that a concurrent Phase 3 may still be working on).
+    ``exclude_states`` are left untouched.
 
     Returns the number of rows reset.
     """

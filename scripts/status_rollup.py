@@ -91,7 +91,7 @@ def buckets_by_state(records: list[dict]) -> dict[str, list[dict]]:
             return "known_supported"
         if v == "known_unsupported":
             return "known_unsupported"
-        return "unknown"  # unknown + pending_publish + pending_validation + new
+        return "unknown"  # unknown + pending_publish + new
 
     groups: dict[tuple[str, str], dict] = {}
     for img in records:

@@ -41,7 +41,6 @@ KNOWN_UNSUPPORTED = "known_unsupported"
 # Phase 2 owns cheap repo/package verdicts; Phase 3 owns VM-tested ones.
 GATE_VERDICT = "gate"
 PENDING_PUBLISH = "pending_publish"
-PENDING_VALIDATION = "pending_validation"
 
 
 class ProdLike(Protocol):

@@ -89,8 +89,7 @@ jobs:
           # forgotten variable will NOT keep re-provisioning Phase 3 VMs.
           EMIT_BACKLOG: ${{ (inputs.emit_backlog || inputs.full_revalidation) && format('manual-{0}', github.run_id) || vars.EMIT_BACKLOG }}
           # One-shot FULL re-validation: clears every tracked distro's verdict
-          # back to 'unknown' once (keeping any pending_validation rows a
-          # concurrent Phase 3 owns) so the WHOLE fleet re-runs through Phase
+          # back to 'unknown' once so the WHOLE fleet re-runs through Phase
           # 2/3, exactly like a first run. Ticking full_revalidation arms this
           # AND the backlog feed above, because a reset alone only marks rows
           # unknown -- the backlog is what actually hands them to Phase 2.

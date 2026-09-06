@@ -23,9 +23,8 @@ CREATE TABLE IF NOT EXISTS images (
     last_checked  TEXT    NOT NULL,   -- ISO8601 UTC, updated on every scan run
     validated     TEXT    NOT NULL DEFAULT 'unknown',
                                       -- unknown           : not yet handed to Phase 2/3
-                                      -- pending_publish   : prod repo exists but no AzNFS package yet;
-                                      --                     team must publish manually (retried each run)
-                                      -- pending_validation: package found, LISA job emitted, awaiting Phase 3
+                                      -- pending_publish   : no code writes this today, but Phase 2
+                                      --                     re-queues any row found in it
                                       -- known_supported   : passed Phase 3 LISA test cases
                                       -- known_unsupported : failed at some phase (reason e-mailed)
     last_validated_version TEXT NOT NULL DEFAULT '',
