@@ -55,9 +55,10 @@ Three moving parts, all already in this folder:
 1. **Read** Phase 2's `lisa_jobs.json` (one entry per distro: image URN,
    published package URL + version, arch).
 2. **Validate** each distro: the driver runs `lisa run` on the base runbook with
-   `-v` overrides. All 3 cases run **in parallel** (`concurrency:3`) inside one
-   **pinned resource group** (`lisa-aznfs-phase3`), so distros run **serially**
-   (one env at a time). The `junit` notifier writes `lisa.junit.xml`.
+   `-v` overrides. The cases run **in parallel** (`--concurrency`: 3 by default, 1 in CI
+   unless `PHASE3_CONCURRENCY` is set),
+   each environment in its **own resource group** that LISA creates and deletes.
+   The `junit` notifier writes `lisa.junit.xml`.
 3. **Score**: the driver parses that XML — a distro **passes** when it has at
    least one executed case and **zero** failures; on a failure it extracts the
    failing `[Tier N: step]` tag.
@@ -74,19 +75,21 @@ Three moving parts, all already in this folder:
 
 ```bash
 # from the repo root, with the LISA venv active and `az login` done.
-# RG is pinned (PHASE3_RESOURCE_GROUP=lisa-aznfs-phase3) -> the driver forces
-# --concurrency 1 / --max-parallel-distros 1 (one shared RG can't run envs in
-# parallel). Unset PHASE3_RESOURCE_GROUP for per-env RGs + real parallelism.
+# One RG per environment by default, created and deleted by LISA, so distros
+# can run in parallel. Set PHASE3_RESOURCE_GROUP to pin them all into one
+# pre-created RG instead -> the driver then forces --concurrency 1 /
+# --max-parallel-distros 1.
 python -m phase3.run_phase3 path/to/jobs.json \
   --subscription-id 8ffe006d-4aa2-4eb6-bc3c-f33092ef804a
 ```
 
-- Pinned RG = least privilege: the MI needs only Virtual Machine + Network +
-  Storage Account Contributor on `lisa-aznfs-phase3` (no subscription-scope
-  resourcegroups/write). Trade-off: distros run one at a time.
-- To parallelize: unset `PHASE3_RESOURCE_GROUP`, then `--max-parallel-distros N`
-  runs N distros at once. VMs in flight ≈ `max_parallel_distros × 2 vCPUs`;
-  bound by regional vCPU quota.
+- `--max-parallel-distros N` runs N distros at once. VMs in flight ≈
+  `max_parallel_distros × 2 vCPUs`; bound by regional vCPU quota.
+- Pinning an RG is the least-privilege option: the MI then needs only Virtual
+  Machine + Network + Storage Account Contributor on that one group, and no
+  `resourcegroups/write`. **But LISA's only cleanup is deleting a group it
+  created, so with one pinned it deletes nothing and every VM survives the run**
+  -- `scripts/vm_janitor.py` has to sweep them. Prefer the unpinned default.
 
 An example input is in [`examples/jobs.example.json`](examples/jobs.example.json).
 

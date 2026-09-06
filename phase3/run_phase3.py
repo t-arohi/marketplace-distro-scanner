@@ -84,7 +84,7 @@ def _overrides(job: LisaJob, subscription_id: str, concurrency: int) -> List[str
         # subscription resourcegroups/write). A pinned RG shares one ARM
         # deployment name + SSH key, so concurrency is forced to 1 in main().
         # Empty => one auto-deleted RG per env (needs sub-scope rights).
-        "resource_group_name": os.environ.get("PHASE3_RESOURCE_GROUP", "lisa-aznfs-phase3"),
+        "resource_group_name": os.environ.get("PHASE3_RESOURCE_GROUP", ""),
     }
     args: List[str] = []
     for key, value in pairs.items():
@@ -237,12 +237,12 @@ def main() -> int:
 
     # A pinned resource group shares one ARM deployment name + SSH key, so envs
     # cannot run in parallel: force serial (1 case, 1 distro at a time).
-    if os.environ.get("PHASE3_RESOURCE_GROUP", "lisa-aznfs-phase3"):
+    if os.environ.get("PHASE3_RESOURCE_GROUP", ""):
         if args.concurrency != 1 or args.max_parallel_distros != 1:
             logger.warning(
                 "PHASE3_RESOURCE_GROUP=%s pins one RG -> forcing concurrency=1 "
                 "and max_parallel_distros=1",
-                os.environ.get("PHASE3_RESOURCE_GROUP", "lisa-aznfs-phase3"),
+                os.environ.get("PHASE3_RESOURCE_GROUP", ""),
             )
         args.concurrency = 1
         args.max_parallel_distros = 1

@@ -32,13 +32,13 @@ variable:
     value: ""
   - name: location
     value: "centralindia"
-  # Pinned to one pre-created RG (default below) so the runner identity only
-  # needs Network/Storage Account/Virtual Machine Contributor on THIS RG, not
-  # subscription-scope rights. A pinned RG shares one ARM deployment name + SSH
-  # key, so envs run SERIALLY (concurrency=1). Set empty to make LISA create a
-  # fresh RG per env (faster, parallel) -- but that needs sub-scope rights.
+  # EMPTY by default: LISA creates a fresh RG per environment and DELETES it at
+  # the end. Deleting the group is its only cleanup -- pin an RG here and it
+  # skips deletion entirely (it must not destroy a group it did not create) and
+  # every VM it provisions survives the run. Pin one only if the runner identity
+  # cannot be given subscription-scope rights, and expect concurrency=1.
   - name: resource_group_name
-    value: "lisa-aznfs-phase3"
+    value: ""
   - name: marketplace_image
     value: "RedHat:RHEL:9_5:latest"
   - name: vm_size
@@ -120,6 +120,10 @@ platform:
         type: $(auth_type)
         token: $(azure_arm_access_token)
       resource_group_name: $(resource_group_name)
+      # Marks the groups LISA creates as ours, so scripts/vm_janitor.py can find
+      # an orphan left by a crash without guessing from its name.
+      resource_group_tags:
+        created_by: aznfs-phase3
       subscription_id: $(subscription_id)
     requirement:
       core_count: 2

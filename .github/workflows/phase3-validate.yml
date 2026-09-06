@@ -191,9 +191,10 @@ jobs:
           az login --identity --client-id "${AZURE_CLIENT_ID}" \
             --allow-no-subscriptions >/dev/null
           # Ensure the pinned RG exists (idempotent; no-op if already there).
-          # LISA in this engine version tears a *specified* RG down at the end,
-          # so recreate it each run -> no manual step, RG is effectively
-          # permanent. The MI has Resource Group Contributor to do this.
+          # LISA does NOT tear down a *specified* RG -- it skips deletion so it
+          # cannot destroy a group it did not create, and has no per-resource
+          # fallback. Nothing here is cleaned up automatically; the sweep step
+          # after this one is what deletes the VMs.
           if [ -n "${PHASE3_RESOURCE_GROUP:-}" ]; then
             az group create --name "${PHASE3_RESOURCE_GROUP}" \
               --location "${PHASE3_LOCATION:-centralindia}" --output none
@@ -203,6 +204,42 @@ jobs:
             --subscription-id "${AZURE_SUBSCRIPTION_ID}" \
             --concurrency "${PHASE3_CONCURRENCY:-1}" \
             --max-parallel-distros "${PHASE3_MAX_PARALLEL_DISTROS:-1}"
+
+      # ----------------------------------------------------------------
+      # 5b. Delete the VMs LISA left behind.
+      # ----------------------------------------------------------------
+      # LISA only ever cleans up by deleting the resource group it created, and
+      # skips that for a pinned one -- so without this the group just fills up
+      # with running VMs. Runs even when validation failed, because a failed run
+      # still provisioned them.
+      - name: Sweep Phase 3 VMs
+        if: always()
+        env:
+          AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          AZURE_CLIENT_ID: ${{ vars.AZURE_MANAGED_IDENTITY_CLIENT_ID }}
+          AZURE_MANAGED_IDENTITY_CLIENT_ID: ${{ vars.AZURE_MANAGED_IDENTITY_CLIENT_ID }}
+          ACS_ENDPOINT: ${{ vars.ACS_ENDPOINT }}
+          ACS_SENDER: ${{ vars.ACS_SENDER }}
+          NOTIFY_RECIPIENTS: ${{ vars.NOTIFY_RECIPIENTS }}
+          PHASE3_RESOURCE_GROUP: ${{ vars.PHASE3_RESOURCE_GROUP }}
+          # Same venv the validation step uses -- the alert needs its packages.
+          LISA_VENV: ${{ vars.LISA_VENV }}
+        run: |
+          set -euo pipefail
+          az login --identity --client-id "${AZURE_CLIENT_ID}" \
+            --allow-no-subscriptions >/dev/null
+          # Phase 3 holds the only marketplace-db slot, so nothing else owns a
+          # VM here and everything from this run is finished with. With no RG
+          # pinned the janitor sweeps the tagged groups LISA failed to delete.
+          # Built as an array so the RG name is unambiguously one argument.
+          ARGS=(--older-than-hours 0 --alert)
+          if [ -n "${PHASE3_RESOURCE_GROUP:-}" ]; then
+            ARGS=(--resource-group "$PHASE3_RESOURCE_GROUP" "${ARGS[@]}")
+          fi
+          # The venv, not bare `python`: this runner has no `python` on PATH, and
+          # the alert needs azure-communication-email, which only the venv has.
+          PYTHONPATH=scripts "${LISA_VENV:-$HOME/lisa-venv}/bin/python" \
+            scripts/vm_janitor.py "${ARGS[@]}"
 
       # ----------------------------------------------------------------
       # 6. Refresh the committed status page with the fresh verdicts.
