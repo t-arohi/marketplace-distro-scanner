@@ -213,7 +213,7 @@ highlights:
 | `family` | `apt` or `yum` — used by Phase 2 gates. |
 | `distro_label` | Human-readable name, e.g. `Ubuntu 24.04`, `RHEL 9`, `Rocky 9`. |
 | `version` | Latest version observed. Bumped in place on a new release. |
-| `validated` | The persisted validation state. Only three values are ever stored: `unknown`, `known_supported`, and `known_unsupported`. (`pending_publish` is used only as a label in the summary e-mail — it is never written to the DB; see the Phase 2 section below.) **Preserved across version bumps** so manual validation state is not lost. Surfaced in the Phase 1 JSON as `validation_status`. |
+| `validated` | The persisted validation state. Three values are written in practice: `unknown`, `known_supported`, and `known_unsupported`. (`pending_publish` is a label in the summary e-mail; no code writes it today, but the schema permits it and Phase 2 re-queues any row found in that state — see the Phase 2 section below.) **Preserved across version bumps** so manual validation state is not lost. Surfaced in the Phase 1 JSON as `validation_status`. |
 | `last_validated`, `last_validated_version`, `last_validated_image_version`, `last_regressed_version` | Stamped by Phase 2/3 when a verdict is recorded: the timestamp, the validated AzNFS version + marketplace image (Gate 3's re-validation baselines), and the AzNFS version that regressed on an already-supported distro (if any). |
 | `verdict_source` | Which phase decided: `gate` (Phase 2 repo/package lookup) or `lisa` (Phase 3 ran the suite on a VM). Phase 2 re-checks its own `gate` verdicts every run, so a `known_unsupported` that was stale heals itself; `lisa` verdicts are left alone so a failing distro is not re-provisioned daily. Also holds `probe_error`, which is **not** a verdict: it means the last check could not reach PMC, so `validated` was left untouched and the row is retried on the next run. Any real verdict clears it. |
 | `date_added`, `last_modified`, `last_checked` | All reset to "now" on a version bump. |
@@ -323,9 +323,10 @@ Notification failures are caught and logged — they never crash a run.
 
 For each image Phase 2 walks the version-indexed PMC prod layout. Phase 2 only
 ever writes three states to the DB — `unknown`, `known_supported`,
-`known_unsupported`. `pending_publish` is not stored; it appears only as a label
-in the summary e-mail. A legacy `pending_validation` state was written by an
-older version; those rows are released back to `unknown` on the next run.
+`known_unsupported`. `pending_publish` appears as a label in the summary e-mail;
+no code writes it today, but Phase 2 re-queues any row found in that state. A
+legacy `pending_validation` state was written by an older version; those rows are
+released back to `unknown` on the next run.
 
 1. **Gate 1 — repo exists?** `GET /<distro>/<version>/prod/` returns 200. If not,
    the release is stored `known_unsupported` (reason: *prod repo is missing*).

@@ -127,6 +127,31 @@ def test_legacy_pending_validation_rows_are_released(tmp_path):
     assert db_manager.get_image_record(db, *ident)["validated"] == "unknown"
 
 
+def test_releasing_a_stranded_row_clears_its_validation_markers(tmp_path):
+    # A surviving last_validated_version would let Gate 3 trust the row without
+    # ever running it -- the opposite of releasing it for validation.
+    db = str(tmp_path / "m.db")
+    db_manager.initialize(db, "db/schema.sql")
+    db_manager.check_and_upsert(db, "RedHat", "RHEL", "8-LVM", "8.9.1", "eastus",
+                                "x86_64", "yum", "RHEL 8")
+    ident = ("RedHat", "RHEL", "8-LVM", "eastus", "x86_64")
+    conn = sqlite3.connect(db)
+    conn.execute("""UPDATE images SET validated='pending_validation',
+                        last_validated_version='0.3.458', reason='stale',
+                        verdict_source='gate', last_regressed_version='0.3.500',
+                        last_validated_image_version='8.9.0'""")
+    conn.commit()
+    conn.close()
+
+    db_manager.initialize(db, "db/schema.sql")
+
+    row = db_manager.get_image_record(db, *ident)
+    assert row["validated"] == "unknown"
+    for marker in ("last_validated_version", "reason", "verdict_source",
+                   "last_regressed_version", "last_validated_image_version"):
+        assert row[marker] == "", f"{marker} survived the release"
+
+
 def test_retired_state_cannot_be_written(tmp_path):
     db = str(tmp_path / "m.db")
     db_manager.initialize(db, "db/schema.sql")

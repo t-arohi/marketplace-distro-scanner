@@ -25,7 +25,7 @@ UNCHANGED = "unchanged"
 # Phase 2 validation states written back to the `validated` column.
 KNOWN_SUPPORTED = "known_supported"
 KNOWN_UNSUPPORTED = "known_unsupported"
-PENDING_PUBLISH = "pending_publish"        # e-mail label only, never stored
+PENDING_PUBLISH = "pending_publish"        # summary-e-mail label; no code writes it, but Phase 2 re-queues rows found in it
 UNKNOWN = "unknown"
 _VALID_STATES = {KNOWN_SUPPORTED, KNOWN_UNSUPPORTED, PENDING_PUBLISH, UNKNOWN}
 
@@ -92,9 +92,18 @@ def _lazy_migrate(conn: sqlite3.Connection) -> None:
 
     # 'pending_validation' was written by an older Phase 2 and is no longer set
     # by anything. Phase 2 skipped that state and the reset preserved it, so the
-    # rows could never be validated or cleared -- release them.
+    # rows could never be validated or cleared -- release them. The markers go
+    # too: a surviving last_validated_version would let Gate 3 trust the row
+    # without a run, which is the opposite of releasing it.
     stranded = conn.execute(
-        "UPDATE images SET validated = 'unknown' WHERE validated = 'pending_validation'"
+        """UPDATE images
+              SET validated                    = 'unknown',
+                  last_validated_version       = '',
+                  last_validated_image_version = '',
+                  last_regressed_version       = '',
+                  reason                       = '',
+                  verdict_source               = ''
+            WHERE validated = 'pending_validation'"""
     ).rowcount
     if stranded:
         conn.commit()
