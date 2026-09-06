@@ -228,8 +228,10 @@ def dedup_backlog(records: list[dict]) -> list[dict]:
     spin up duplicate VMs for the same release. Collapsing to a single
     representative per (distro_label, architecture) keeps a concrete marketplace
     image for Phase 3 while bounding the work to roughly one job per
-    release/arch. The newest marketplace ``version`` in each group is chosen so
-    the pick is deterministic and validates the latest image.
+    release/arch. The pick is the most deployable SKU, then the newest version,
+    then name order -- see ``aznfs_support.is_preferred_image``. Deployability
+    leads because an image whose plan we cannot accept yields no result at all,
+    so an older SKU that boots beats a newer one that does not.
     """
     chosen: dict[tuple[str, str], dict] = {}
     for r in records:
@@ -241,8 +243,8 @@ def dedup_backlog(records: list[dict]) -> list[dict]:
             continue
         key = (r.get("distro_label", ""), r.get("architecture", ""))
         cur = chosen.get(key)
-        if cur is None or (db_manager.version_tuple(r.get("version", ""))
-                           > db_manager.version_tuple(cur.get("version", ""))):
+        if cur is None or aznfs_support.is_preferred_image(
+                r, cur, db_manager.version_tuple):
             chosen[key] = r
     return sorted(
         chosen.values(),

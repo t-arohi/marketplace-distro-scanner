@@ -147,7 +147,7 @@ def entries_from_db(
     for r in rows:
         key = (r.get("distro_label", ""), r.get("architecture", ""))
         cur = chosen.get(key)
-        if cur is None or _is_newer_image(r, cur):
+        if cur is None or _is_preferred_image(r, cur):
             chosen[key] = r
     return sorted(
         chosen.values(),
@@ -174,14 +174,15 @@ _LISA_VERDICT = "lisa"
 _PROBE_ERROR = "probe_error"
 
 
-def _is_newer_image(row: dict, cur: dict) -> bool:
-    """True when ``row`` carries a newer marketplace version than ``cur``.
+def _is_preferred_image(row: dict, cur: dict) -> bool:
+    """True when ``row`` is the better representative of the two.
 
-    Numeric, not lexical: '9.10.2026...' is newer than '9.8.2026...' but sorts
-    BELOW it as a string, which would pick a stale representative.
+    Not recency alone: most deployable first, then newest version (numerically --
+    '9.10.2026...' is newer than '9.8.2026...' but sorts BELOW it as a string),
+    then name so a tie cannot resolve differently between runs. See
+    ``aznfs_support.is_preferred_image`` for why that order.
     """
-    return (pmc_packages.version_tuple(row.get("version", ""))
-            > pmc_packages.version_tuple(cur.get("version", "")))
+    return aznfs_support.is_preferred_image(row, cur, pmc_packages.version_tuple)
 
 
 def _load_exclusions() -> tuple[tuple[str, ...], tuple[str, ...]]:
@@ -285,7 +286,7 @@ def enrich_and_merge(entries: list[dict], db_mod: Any, db_path: str) -> list[dic
     # an unchanged one -> trusted (no VM). Tagged _db_state so process_entry never
     # DOWNGRADES a known_supported distro if the re-check hits a transient prod
     # hiccup. Collapsed to ONE representative per (distro_label, architecture) --
-    # newest marketplace version -- matching Phase 3's per-URL dedup so a release
+    # most deployable, then newest -- matching Phase 3's per-URL dedup so a release
     # is re-validated once, not once per SKU; and filtered by the same exclusion
     # policy Phase 1 uses so a stale row for a non-deployable distro/offer
     # (e.g. CentOS, advanced-sla) is not re-fed. Deduped against entries above.
@@ -305,7 +306,7 @@ def enrich_and_merge(entries: list[dict], db_mod: Any, db_path: str) -> list[dic
                 continue
             key = (row.get("distro_label", ""), row.get("architecture", ""))
             cur = reps.get(key)
-            if cur is None or _is_newer_image(row, cur):
+            if cur is None or _is_preferred_image(row, cur):
                 reps[key] = row
         for row in reps.values():
             ident = (
@@ -328,7 +329,7 @@ def enrich_and_merge(entries: list[dict], db_mod: Any, db_path: str) -> list[dic
                 continue
             key = (row.get("distro_label", ""), row.get("architecture", ""))
             cur = unsupported_reps.get(key)
-            if cur is None or _is_newer_image(row, cur):
+            if cur is None or _is_preferred_image(row, cur):
                 unsupported_reps[key] = row
         for row in unsupported_reps.values():
             ident = (
@@ -430,7 +431,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--from-db", action="store_true",
         help="build entries straight from the DB for the --distros selection "
-             "(one rep SKU per distro+arch, newest version) instead of reading "
+             "(one rep SKU per distro+arch: most deployable, then newest) "
+             "instead of reading "
              "Phase 1's delta-only needs_validation.json. Use for a manual "
              "re-validation of specific distros without re-running Phase 1.",
     )

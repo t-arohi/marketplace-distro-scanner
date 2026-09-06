@@ -86,3 +86,54 @@ def is_supported_distro(label: str) -> bool:
     if "sles" in s or "suse" in s:
         return ver in SUPPORTED_SLES
     return False
+
+
+# SKU/offer name fragments that make an image harder or impossible to deploy.
+# `pro`, `cvm` and friends carry a marketplace PLAN, so the subscription must
+# accept terms first -- which this pipeline's identity cannot do. The rest are
+# special-purpose builds nobody means to certify against.
+DISPREFERRED_SKU_TOKENS: tuple[str, ...] = (
+    "pro", "cvm", "confidential", "minimal", "cis", "fips", "byos", "raw", "daily",
+)
+
+
+def deployability_penalty(image: str, sku: str) -> int:
+    """How many awkward markers an image carries -- lower is more deployable.
+
+    Token-aware, so `pro` matches `ubuntu-pro` and `pro-server` but not a name
+    that merely contains those letters.
+    """
+    tokens = set(re.split(r"[^a-z0-9]+", f"{image} {sku}".lower()))
+    return sum(1 for t in DISPREFERRED_SKU_TOKENS if t in tokens)
+
+
+def is_preferred_image(row: dict, cur: dict, version_tuple) -> bool:
+    """True when ``row`` is a better representative for a (distro, arch) than ``cur``.
+
+    Deployability outranks recency, deliberately: an image whose plan we cannot
+    accept produces no result at all, so a slightly older image we can actually
+    boot is worth more than the newest one we cannot. Across the tracked fleet
+    26 distro/arch pairs have a `pro`/`raw`/`daily` SKU strictly newer than the
+    best plain one, so ordering by version first would keep selecting images
+    that fail on marketplace terms.
+
+    Then newest version, numerically -- '9.10.2026...' is newer than '9.8.2026...'
+    but sorts BELOW it as a string. Then name, because ties are the norm (a
+    distro's SKUs are rebuilt together) and without a final tie-break the winner
+    came down to DB row order, so the image under test drifted between runs and
+    the results looked like regressions.
+
+    ``version_tuple`` is injected because Phase 1 and Phase 2 each have their own
+    copy and neither can import the other's.
+    """
+    row_penalty = deployability_penalty(row.get("image", ""), row.get("sku", ""))
+    cur_penalty = deployability_penalty(cur.get("image", ""), cur.get("sku", ""))
+    if row_penalty != cur_penalty:
+        return row_penalty < cur_penalty
+
+    newer = version_tuple(row.get("version", ""))
+    current = version_tuple(cur.get("version", ""))
+    if newer != current:
+        return newer > current
+
+    return (row.get("image", ""), row.get("sku", "")) < (cur.get("image", ""), cur.get("sku", ""))
