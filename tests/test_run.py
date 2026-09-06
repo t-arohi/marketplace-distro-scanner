@@ -537,6 +537,9 @@ def test_lisa_unsupported_rows_are_not_refed():
 
 
 def test_unsupported_refeed_keeps_one_rep_per_distro_and_arch():
+    # Deployability outranks recency: a 'minimal' build is a special-purpose
+    # image, and picking it over the plain server SKU is how the pipeline ended
+    # up validating images it could not deploy.
     db = FakeDbMod(unsupported=[
         _db_row("server", version="24.04.1"),
         _db_row("minimal", version="24.04.9"),
@@ -544,7 +547,18 @@ def test_unsupported_refeed_keeps_one_rep_per_distro_and_arch():
 
     out = run.enrich_and_merge([], db, "db")
 
-    assert [r["sku"] for r in out] == ["minimal"]  # newest marketplace version wins
+    assert [r["sku"] for r in out] == ["server"]
+
+
+def test_refeed_prefers_the_newest_of_two_equally_deployable_skus():
+    db = FakeDbMod(unsupported=[
+        _db_row("server", version="24.04.1"),
+        _db_row("server", version="24.04.9"),
+    ])
+
+    out = run.enrich_and_merge([], db, "db")
+
+    assert [r["version"] for r in out] == ["24.04.9"]
 
 
 def _probe_row(sku="server", label="Ubuntu 24.04", validated="unknown"):

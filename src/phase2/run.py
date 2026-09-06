@@ -175,13 +175,14 @@ _PROBE_ERROR = "probe_error"
 
 
 def _is_newer_image(row: dict, cur: dict) -> bool:
-    """True when ``row`` carries a newer marketplace version than ``cur``.
+    """True when ``row`` is the better representative of the two.
 
-    Numeric, not lexical: '9.10.2026...' is newer than '9.8.2026...' but sorts
-    BELOW it as a string, which would pick a stale representative.
+    Numeric version, not lexical: '9.10.2026...' is newer than '9.8.2026...' but
+    sorts BELOW it as a string. On a tie -- which is normal, since a distro's
+    SKUs are rebuilt together -- the more deployable and then the
+    lexicographically first name wins, so the pick cannot drift between runs.
     """
-    return (pmc_packages.version_tuple(row.get("version", ""))
-            > pmc_packages.version_tuple(cur.get("version", "")))
+    return aznfs_support.is_preferred_image(row, cur, pmc_packages.version_tuple)
 
 
 def _load_exclusions() -> tuple[tuple[str, ...], tuple[str, ...]]:
