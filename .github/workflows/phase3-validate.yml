@@ -95,6 +95,14 @@ jobs:
           # Set the LISA_REF repo variable to a SHA to freeze the engine while
           # chasing a regression; unset it to follow upstream main again.
           LISA_REF: ${{ vars.LISA_REF }}
+          # actions/checkout leaves a github.com auth header carrying THIS repo's
+          # token, which outranks the runner's own credential and 404s on the
+          # private engine repo. Cleared for this step only -- via env, so pip's
+          # child git sees it too, and the repo config stays intact for the
+          # STATUS.md push later on.
+          GIT_CONFIG_COUNT: "1"
+          GIT_CONFIG_KEY_0: http.https://github.com/.extraheader
+          GIT_CONFIG_VALUE_0: ""
         run: |
           set -euo pipefail
           VENV="${LISA_VENV:-$HOME/lisa-venv}"
@@ -105,8 +113,18 @@ jobs:
           # best-effort (it needs sudo), so it cannot be relied on to supply git
           # -- but pip needs it to clone, and that failure is loud and specific.
           WANT=""
+          RESOLVE_ERR=""
           if command -v git >/dev/null 2>&1; then
-            WANT=$(bash phase3/resolve_lisa_ref.sh "$REPO" "$REF")
+            # Every part best-effort: this path exists so a failed lookup cannot
+            # stop Phase 3, and it would be self-defeating for the error capture
+            # itself to abort the step under set -e.
+            ERR_FILE="${RUNNER_TEMP:-/tmp}/lisa_ref.err"
+            if ! WANT=$(bash phase3/resolve_lisa_ref.sh "$REPO" "$REF" 2>"$ERR_FILE"); then
+              WANT=""
+              RESOLVE_ERR=$(tail -n 1 "$ERR_FILE" 2>/dev/null || true)
+              # Distinct from the git-absent case below, which reads "no git".
+              [ -n "$RESOLVE_ERR" ] || RESOLVE_ERR="lookup failed, reason unavailable"
+            fi
           fi
           # Compare commit to commit: pip records the URL it cloned, so a plain
           # substring test could match on any part of it. Missing venv is fine --
@@ -115,7 +133,13 @@ jobs:
           HAVE_SHA=$(printf '%s' "$HAVE" | sed -n 's/.*@\([0-9a-fA-F]\{7,40\}\).*/\1/p' |
             tr '[:upper:]' '[:lower:]')
 
-          if [ -n "$WANT" ] && [ -n "$HAVE_SHA" ] \
+          if [ -z "$WANT" ] && "$VENV/bin/lisa" --help >/dev/null 2>&1; then
+            # Being unable to ASK what upstream is must not stop Phase 3 running
+            # on the engine it already has -- the engine repo is private, so a
+            # lapsed credential is a routine failure, not a reason to skip
+            # validation entirely.
+            echo "::warning::Could not resolve upstream LISA (${RESOLVE_ERR:-no git}); keeping the installed engine ${HAVE_SHA:-unknown}"
+          elif [ -n "$WANT" ] && [ -n "$HAVE_SHA" ] \
              && "$VENV/bin/lisa" --help >/dev/null 2>&1 \
              && { [[ "$WANT" == "$HAVE_SHA"* ]] || [[ "$HAVE_SHA" == "$WANT"* ]]; }; then
             echo "LISA engine up to date at $WANT"
