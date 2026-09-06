@@ -24,22 +24,22 @@ if [ -z "$(git status --porcelain -- STATUS.md)" ]; then
   exit 0
 fi
 
-BRANCH="${GITHUB_REF_NAME:-master}"
+# Generated content goes to its own branch: master is protected (reviews are
+# required), so a direct push from CI is rejected with GH006 no matter how many
+# times it is retried. Read the page at
+# https://github.com/<owner>/<repo>/blob/<STATUS_BRANCH>/STATUS.md
+BRANCH="${STATUS_BRANCH:-status-page}"
 git config user.name "github-actions[bot]"
 git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 git add STATUS.md
 git commit -m "chore: refresh AzNFS validation status page [skip ci]"
 
-for attempt in 1 2 3; do
-  if git pull --rebase --autostash origin "$BRANCH" && git push origin "HEAD:$BRANCH"; then
-    echo "Published STATUS.md to $BRANCH."
-    exit 0
-  fi
-  # A conflicted pull leaves a rebase in progress, which would make every
-  # later attempt fail immediately instead of retrying the push race.
-  git rebase --abort 2>/dev/null || true
-  echo "Push attempt $attempt failed; retrying."
-done
+# The branch holds one throwaway commit per refresh, so overwrite it rather than
+# rebasing: there is no history worth preserving and nothing else writes here.
+if git push --force origin "HEAD:refs/heads/$BRANCH"; then
+  echo "Published STATUS.md to $BRANCH."
+  exit 0
+fi
 
-echo "::warning::Could not push the STATUS.md refresh"
+echo "::warning::Could not push the STATUS.md refresh to $BRANCH"
 exit 0

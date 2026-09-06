@@ -72,7 +72,9 @@ jobs:
       #    so no SMTP step is needed afterwards.
       #
       #    Exit code 1 means "new distro release(s) found" — not a
-      #    failure. Anything > 1 is treated as a real failure.
+      #    failure. Anything > 1 is treated as a real failure, which must fail
+      #    the job: Phase 2 only runs when this workflow concludes 'success',
+      #    so swallowing a crash here would hand Phase 2 a stale artifact.
       # ----------------------------------------------------------------
       - name: Run marketplace scan
         id: scan
@@ -104,7 +106,6 @@ jobs:
           if [ "$scan_exit" -gt 1 ]; then
             exit "$scan_exit"
           fi
-        continue-on-error: true
 
       # ----------------------------------------------------------------
       # 5. The run summary (the cut-down distro list with SKU counts) is
