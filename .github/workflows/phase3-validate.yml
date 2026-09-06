@@ -95,6 +95,14 @@ jobs:
           # Set the LISA_REF repo variable to a SHA to freeze the engine while
           # chasing a regression; unset it to follow upstream main again.
           LISA_REF: ${{ vars.LISA_REF }}
+          # actions/checkout leaves a github.com auth header carrying THIS repo's
+          # token, which outranks the runner's own credential and 404s on the
+          # private engine repo. Cleared for this step only -- via env, so pip's
+          # child git sees it too, and the repo config stays intact for the
+          # STATUS.md push later on.
+          GIT_CONFIG_COUNT: "1"
+          GIT_CONFIG_KEY_0: http.https://github.com/.extraheader
+          GIT_CONFIG_VALUE_0: ""
         run: |
           set -euo pipefail
           VENV="${LISA_VENV:-$HOME/lisa-venv}"
