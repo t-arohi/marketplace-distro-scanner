@@ -480,3 +480,28 @@ def test_environment_producing_no_cases_is_an_infra_error(tmp_path, monkeypatch)
     run_phase3._validate_one(job, "sub", 1)
 
     assert job.infra_error
+
+
+def test_infra_error_does_not_overwrite_a_real_verdict_reason(tmp_path, monkeypatch):
+    # reason is the detail behind a verdict. Writing an Azure error there would
+    # leave the row asserting known_unsupported for a reason that is not why.
+    db = _make_db(tmp_path)
+    monkeypatch.setattr(record_result.config, "DB_PATH", str(db))
+    monkeypatch.setattr(record_result.config, "PHASE3_SCHEMA_PATH", "/nonexistent.sql")
+
+    key = {"publisher": "redhat", "image": "rhel", "sku": "9_5",
+           "region": "eastus", "architecture": "x86_64"}
+    record_result._record_validation(key, "known_unsupported",
+                                     reason="prod repo is missing")
+
+    record_result._mark_infra_error(key, _REAL_DEPLOY_FAILURE)
+
+    conn = sqlite3.connect(str(db))
+    validated, reason, source = conn.execute(
+        "SELECT validated, reason, verdict_source FROM images"
+    ).fetchone()
+    conn.close()
+
+    assert validated == "known_unsupported"
+    assert reason == "prod repo is missing"  # not the deploy error
+    assert source == record_result.INFRA_ERROR

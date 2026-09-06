@@ -346,6 +346,11 @@ def _mark_infra_error(image_key: Dict[str, str], reason: str) -> None:
     A VM that never deployed proves nothing about AzNFS, so the row keeps
     whatever verdict it had; only the marker is set, which is what makes Phase 2
     retry it. Mirrors db_manager.mark_probe_failed on the Phase 2 side.
+
+    ``reason`` is left alone too: it is the detail behind a verdict, so writing
+    an Azure error there would leave the row asserting its existing verdict for
+    a reason that is not why. The detail goes to the summary e-mail and the run
+    log instead.
     """
     now = _now_iso()
     conn = sqlite3.connect(config.DB_PATH)
@@ -354,19 +359,21 @@ def _mark_infra_error(image_key: Dict[str, str], reason: str) -> None:
         cur = conn.execute(
             """
             UPDATE images
-               SET verdict_source = ?, last_checked = ?, reason = ?
+               SET verdict_source = ?, last_checked = ?
              WHERE publisher    = ?
                AND image        = ?
                AND sku          = ?
                AND region       = ?
                AND architecture = ?
             """,
-            (INFRA_ERROR, now, reason, image_key["publisher"], image_key["image"],
+            (INFRA_ERROR, now, image_key["publisher"], image_key["image"],
              image_key["sku"], image_key["region"], image_key["architecture"]),
         )
         conn.commit()
         if cur.rowcount == 0:
             logger.warning("no images row matched %s (infra error)", image_key)
+        else:
+            logger.debug("marked %s for retry: %s", image_key, reason)
     finally:
         conn.close()
 
