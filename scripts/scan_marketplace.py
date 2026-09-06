@@ -531,6 +531,7 @@ def main() -> int:
         "%d unvalidated SKU row(s) (of %d tracked).",
         len(distro_rollup), len(unvalidated_records), len(all_records),
     )
+    write_step_summary(distro_rollup, len(all_records))
 
 
     # ------------------------------------------------------------------
