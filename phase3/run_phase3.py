@@ -197,11 +197,17 @@ def _validate_one(
         ran = total - skipped
         job.lisa_passed = ran > 0 and failed == 0
         if not job.lisa_passed:
-            job.failure_reason = reason or (
-                "no test cases ran (all skipped or environment failed)"
-            )
-            # Nothing executed, or what failed was Azure rather than AzNFS.
-            job.infra_error = ran <= 0 or _is_infra_failure(job.failure_reason)
+            # total == 0 means the environment never produced results. Cases
+            # that ran and SKIPPED are a real answer ("not applicable here"),
+            # so they stay a verdict -- retrying them would burn a VM every run.
+            if total <= 0:
+                job.failure_reason = reason or "environment produced no test cases"
+                job.infra_error = True
+            else:
+                job.failure_reason = reason or (
+                    f"every test case was skipped ({skipped} of {total})"
+                )
+                job.infra_error = _is_infra_failure(job.failure_reason)
         logger.info(
             "[%s] total=%d failed=%d skipped=%d -> %s%s",
             job.distro_label, total, failed, skipped,

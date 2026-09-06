@@ -376,7 +376,6 @@ _REAL_DEPLOY_FAILURE = (
     [
         _REAL_DEPLOY_FAILURE,
         "driver/infra error: LISA produced no junit (exit=1)",
-        "no test cases ran (all skipped or environment failed)",
         "QuotaExceeded: not enough vCPUs in centralindia",
         "[Tier 4: mount] failed to connect to node",
     ],
@@ -446,3 +445,38 @@ def test_a_genuine_test_failure_still_records_known_unsupported(tmp_path, monkey
     assert state == "known_unsupported"
     assert validated == "known_unsupported"
     assert source == record_result.LISA_VERDICT
+
+
+def _junit(tmp_path, tests, failures=0, skipped=0, message=""):
+    case = (f'<testcase name="verify_aznfs_install_lifecycle">'
+            f'<failure message="{message}"/></testcase>') if failures else ""
+    xml = (f'<testsuite tests="{tests}" failures="{failures}" errors="0" '
+           f'skipped="{skipped}">{case}</testsuite>')
+    path = tmp_path / "lisa.junit.xml"
+    path.write_text(xml)
+    return path
+
+
+def test_all_cases_skipped_is_a_verdict_not_an_endless_retry(tmp_path, monkeypatch):
+    # Cases that ran and skipped are a real answer; retrying would burn a VM
+    # on every run for ever.
+    junit = _junit(tmp_path, tests=3, failures=0, skipped=3)
+    monkeypatch.setattr(run_phase3, "_run_lisa", lambda *a, **k: junit)
+
+    job = record_result.LisaJob(publisher="p", image="i", sku="s", version="v",
+                                region="r")
+    run_phase3._validate_one(job, "sub", 1)
+
+    assert not job.lisa_passed
+    assert not job.infra_error
+
+
+def test_environment_producing_no_cases_is_an_infra_error(tmp_path, monkeypatch):
+    junit = _junit(tmp_path, tests=0)
+    monkeypatch.setattr(run_phase3, "_run_lisa", lambda *a, **k: junit)
+
+    job = record_result.LisaJob(publisher="p", image="i", sku="s", version="v",
+                                region="r")
+    run_phase3._validate_one(job, "sub", 1)
+
+    assert job.infra_error
