@@ -135,8 +135,9 @@ jobs:
 
           if [ -z "$WANT" ] && "$VENV/bin/lisa" --help >/dev/null 2>&1; then
             # Being unable to ASK what upstream is must not stop Phase 3 running
-            # on the engine it already has: azfiles-lisa is private, and the
-            # runner has no credential for it in workflow context.
+            # on the engine it already has -- the engine repo is private, so a
+            # lapsed credential is a routine failure, not a reason to skip
+            # validation entirely.
             echo "::warning::Could not resolve upstream LISA (${RESOLVE_ERR:-no git}); keeping the installed engine ${HAVE_SHA:-unknown}"
           elif [ -n "$WANT" ] && [ -n "$HAVE_SHA" ] \
              && "$VENV/bin/lisa" --help >/dev/null 2>&1 \
